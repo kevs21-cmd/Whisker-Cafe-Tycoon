@@ -97,11 +97,25 @@ class Customer:
 class Game:
     def __init__(self):
         pygame.init()
+
+        pygame.mixer.init() #music
+
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption("Neko Cafe Tycoon - Sprite Sheet Integrated")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("Quicksand, Arial", 20, bold=True)
         self.ui_font = pygame.font.SysFont("Quicksand, Arial", 26, bold=True)
+
+        # --- Load Lo-Fi Background Music ---
+        try:
+            # Make sure the path matches where your file is saved!
+            # If it's inside an assets folder, use: 'assets/audio/lofi_bgm.mp3'
+            pygame.mixer.music.load('assets/audio/lofi_bgm.mp3')
+            pygame.mixer.music.set_volume(0.4)
+            pygame.mixer.music.play(-1)  # -1 means loop indefinitely
+            print("🎵 Lo-Fi Music loaded and playing!")
+        except pygame.error as e:
+            print(f"⚠️ Music Asset 'lofi_bgm.mp3' not found or failed to load. Game is muted. Error: {e}")
         
         # --- Asset Loading ---
         self.assets = {}
@@ -156,7 +170,7 @@ class Game:
             "chair": "assets/images/chair.png",
             "spill": "assets/images/spill.png",
             "plant": "assets/images/plant.png",
-            "bg": "assets/images/bg.png"
+            "bg_tile": "assets/images/bg.png"
         }
         for key, path in paths.items():
             if os.path.exists(path):
@@ -372,9 +386,14 @@ class Game:
                 pygame.draw.circle(self.screen, CLR_LEAF, (px+8, py), 10)
 
     def draw(self):
-        if self.assets["bg"]:
-            self.screen.blit(self.assets["bg"], (0, 0))
+        # --- BACKGROUND TILING LOGIC ---
+        if self.assets["bg_tile"]:
+            # Uulitin natin ang bg.png sa bawat Rows at Columns ng screen mo
+            for r in range(ROWS):
+                for c in range(COLS):
+                    self.screen.blit(self.assets["bg_tile"], (c * TILE_SIZE, r * TILE_SIZE))
         else:
+            # Fallback kapag hindi nahanap ang bg.png file
             self.screen.fill(CLR_BG)
             for x in range(0, WIDTH, 50): pygame.draw.line(self.screen, (242,238,230), (x,0), (x, HEIGHT-100))
         
