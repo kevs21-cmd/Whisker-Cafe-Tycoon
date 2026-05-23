@@ -77,7 +77,7 @@ class FloatingText:
         self.alpha = max(0, self.alpha - 4)
 
 class Customer:
-    def __init__(self, start_pos, target_table_idx, target_pos):
+    def __init__(self, start_pos, target_table_idx, target_pos, total_variants):
         self.grid_pos = start_pos
         self.pixel_pos = [start_pos[0]*TILE_SIZE + 25, start_pos[1]*TILE_SIZE + 25]
         self.target_pixel = list(self.pixel_pos)
@@ -86,6 +86,8 @@ class Customer:
         self.path = []
         self.state = "WALKING_IN" 
         self.speed = 2
+        self.anim_offset = random.uniform(0, 100)
+        self.variant = random.randint(0, total_variants - 1)
 
     def update_move(self):
         for i in range(2):
@@ -165,7 +167,6 @@ class Game:
         paths = {
             "cat": "assets/images/cat.png",
             "cat_tray": "assets/images/cat_tray.png",
-            "cust": "assets/images/customer.png",
             "table": "assets/images/table.png",
             "chair": "assets/images/chair.png",
             "spill": "assets/images/spill.png",
@@ -180,6 +181,23 @@ class Game:
                 self.assets[key] = img
             else:
                 self.assets[key] = None
+
+        variant_files = [
+            "assets/images/cat_bnw.png",
+            "assets/images/cat_dark.png",
+            "assets/images/cat_mix.png",
+            "assets/images/cat_siamese.png"
+        ]
+
+        self.assets["cust_variants"] = []
+        for path in variant_files:
+            if os.path.exists(path):
+                img = pygame.image.load(path).convert_alpha()
+                img = pygame.transform.scale(img, (TILE_SIZE, TILE_SIZE))
+                self.assets["cust_variants"].append(img)
+
+        if not self.assets["cust_variants"]:
+            self.assets["cust_variants"].append(None)
 
         # UI Sprite Sheet Loading
         if os.path.exists("ui_spritesheet.png"):
@@ -300,7 +318,10 @@ class Game:
             if available:
                 idx = random.choice(available)
                 target_chair = self.chair_positions[idx][0]
-                new_cust = Customer(self.door_pos, idx, target_chair)
+
+                num_variants = len(self.assets["cust_variants"])
+                new_cust = Customer(self.door_pos, idx, target_chair, num_variants)
+
                 new_cust.path = Dijkstra.find_path(self.door_pos, target_chair, self.obstacles)
                 self.customers.append(new_cust)
             self.spawn_timer = 0
@@ -346,10 +367,41 @@ class Game:
             if t.life <= 0: self.floating_texts.remove(t)
 
     def draw_cat(self, x, y, has_tray):
-        asset = self.assets["cat_tray"] if has_tray and self.assets["cat_tray"] else self.assets["cat"]
-        if asset:
-            self.screen.blit(asset, (x - 25, y - 25))
+        time_ms = pygame.time.get_ticks()
+        
+        # Kunin ang kasalukuyang speed multiplier mula sa upgrades mo (karaniwang nasa 3 hanggang 7)
+        current_speed = 2 + self.upgrades["Cat Speed"]["lv"]
+        
+        if self.cat_pos != self.cat_target:
+            # WALKING STATE: Inihambing natin ang bilis sa aktwal na paglakad (current_speed)
+            # Ginawa nating 0.0035 para swabe at hindi mukhang jelly
+            anim_timer = time_ms * (0.0025 * current_speed)
+            
+            bounce_y = abs(math.sin(anim_timer)) * -5  # Binabaan natin sa -5 pixels lang ang taas ng talbog
+            squash_w = int(TILE_SIZE + math.sin(anim_timer) * 1.5) # Binawasan ang squash para hindi masyadong malambot
+            squash_h = int(TILE_SIZE - math.sin(anim_timer) * 1.5)
         else:
+            # IDLE STATE (Nakatambay): Banayad na paghinga, hindi apektado ng lakad
+            bounce_y = math.sin(time_ms * 0.003) * -1.5
+            squash_w = int(TILE_SIZE + math.sin(time_ms * 0.003) * 0.8)
+            squash_h = int(TILE_SIZE - math.sin(time_ms * 0.003) * 0.8)
+
+        # --- DITO ANG BAGONG LOGIC ---
+        if self.assets["cat"]:
+            # 1. Palaging i-draw ang base na pusa
+            animated_cat = pygame.transform.scale(self.assets["cat"], (squash_w, squash_h))
+            render_x = x - (squash_w // 2)
+            render_y = y - (squash_h // 2) + bounce_y
+            self.screen.blit(animated_cat, (render_x, render_y))
+            
+            # 2. Kung may dalang tray, i-scale at i-patong ito sa ibabaw ng pusa
+            if has_tray and self.assets["cat_tray"]:
+                animated_tray = pygame.transform.scale(self.assets["cat_tray"], (squash_w, squash_h))
+                # I-blit sa eksaktong pwesto para sumabay sa talbog ng pusa!
+                self.screen.blit(animated_tray, (render_x, render_y))
+        else:
+            # Panatilihin ang iyong lumang primitve shape draw logic bilang fallback
+            y += bounce_y
             pygame.draw.ellipse(self.screen, CLR_CAT, (x-18, y-12, 36, 24))
             pygame.draw.arc(self.screen, CLR_CAT, (x-25, y-5, 20, 20), 0, 3, 4)
             pygame.draw.circle(self.screen, CLR_CAT, (int(x+10), int(y-5)), 12)
@@ -427,15 +479,34 @@ class Game:
                     pygame.draw.circle(self.screen, (50,50,50,40), (px, py+2), int(t_size))
                     pygame.draw.rect(self.screen, CLR_TABLE, (px-t_size, py-t_size, t_size*2, t_size*2), border_radius=4)
 
+        time_ms = pygame.time.get_ticks()
         for c in self.customers:
-            if self.assets["cust"]:
-                self.screen.blit(self.assets["cust"], (c.pixel_pos[0]-25, c.pixel_pos[1]-25))
-            else:
-                pygame.draw.circle(self.screen, CLR_CUST, (int(c.pixel_pos[0]), int(c.pixel_pos[1])), 16)
+            c_time = time_ms + c.anim_offset
             
             if c.state == "SITTING":
-                pygame.draw.circle(self.screen, (255,255,255), (c.pixel_pos[0]+15, c.pixel_pos[1]-18), 10)
-                pygame.draw.circle(self.screen, (255,255,255), (c.pixel_pos[0]+8, c.pixel_pos[1]-10), 4)
+                c_bounce_y = math.sin(c_time * 0.002) * -1.5 
+                c_w = int(TILE_SIZE + math.sin(c_time * 0.002) * 0.5)
+                c_h = int(TILE_SIZE - math.sin(c_time * 0.002) * 0.5)
+            else:
+                anim_timer = c_time * 0.006 
+                c_bounce_y = abs(math.sin(anim_timer)) * -4
+                c_w = int(TILE_SIZE + math.sin(anim_timer) * 1.2)
+                c_h = int(TILE_SIZE - math.sin(anim_timer) * 1.2)
+
+            cust_asset = self.assets["cust_variants"][c.variant]
+
+            if cust_asset:
+                animated_cust = pygame.transform.scale(cust_asset, (c_w, c_h))
+                cx = c.pixel_pos[0] - (c_w // 2)
+                cy = c.pixel_pos[1] - (c_h // 2) + c_bounce_y
+                self.screen.blit(animated_cust, (cx, cy))
+            else:
+                pygame.draw.circle(self.screen, CLR_CUST, (int(c.pixel_pos[0]), int(c.pixel_pos[1] + c_bounce_y)), 16)
+            
+            if c.state == "SITTING":
+                # Isama ang c_bounce_y para sumabay din ang white bubbles sa pag-talbog ng pusa
+                pygame.draw.circle(self.screen, (255,255,255), (c.pixel_pos[0]+15, c.pixel_pos[1]-18 + c_bounce_y), 10)
+                pygame.draw.circle(self.screen, (255,255,255), (c.pixel_pos[0]+8, c.pixel_pos[1]-10 + c_bounce_y), 4)
 
         self.draw_cat(self.cat_pos[0], self.cat_pos[1], self.cat_state == "DELIVERING")
         
