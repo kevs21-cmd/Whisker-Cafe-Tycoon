@@ -88,6 +88,9 @@ class Customer:
         self.speed = 2
         self.anim_offset = random.uniform(0, 100)
         self.variant = random.randint(0, total_variants - 1)
+        # --- Patience Logic ---
+        self.max_patience = 800  # Frames
+        self.patience = self.max_patience
 
     def update_move(self):
         for i in range(2):
@@ -103,23 +106,24 @@ class Game:
         pygame.mixer.init() #music
 
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("Neko Cafe Tycoon - Sprite Sheet Integrated")
+        pygame.display.set_caption("Whiskers Cafe Tycoon")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("Quicksand, Arial", 20, bold=True)
         self.ui_font = pygame.font.SysFont("Quicksand, Arial", 26, bold=True)
+        self.title_font = pygame.font.SysFont("Quicksand, Arial", 50, bold=True)
+
+        # --- Game State ---
+        self.game_state = "START" 
 
         # --- Load Lo-Fi Background Music ---
         try:
-            # Make sure the path matches where your file is saved!
-            # If it's inside an assets folder, use: 'assets/audio/lofi_bgm.mp3'
             pygame.mixer.music.load('assets/audio/lofi_bgm.mp3')
-            pygame.mixer.music.set_volume(0.4)
-            pygame.mixer.music.play(-1)  # -1 means loop indefinitely
+            pygame.mixer.music.set_volume(1.0)
+            pygame.mixer.music.play(-1)
             print("🎵 Lo-Fi Music loaded and playing!")
         except pygame.error as e:
             print(f"⚠️ Music Asset 'lofi_bgm.mp3' not found or failed to load. Game is muted. Error: {e}")
         
-        # --- Asset Loading ---
         self.assets = {}
         self.load_assets()
 
@@ -163,7 +167,6 @@ class Game:
         return sprite
 
     def load_assets(self):
-        # General Game Object Paths
         paths = {
             "cat": "assets/images/cat.png",
             "cat_tray": "assets/images/cat_tray.png",
@@ -178,29 +181,21 @@ class Game:
             "chef": "assets/images/cat_chef.png",
             "auto_brewer": "assets/images/auto_brewer.png",  
             "premium_beans": "assets/images/premium_beans.png"
-
         }
         for key, path in paths.items():
             if os.path.exists(path):
                 img = pygame.image.load(path).convert_alpha()
-                
-                # SAKTONG SCALING PARA SA BAWAT UI ELEMENT:
                 if key == "kitchen":
-                    # Ang kusina ay gagawin nating 3 tiles ang lapad at 2 tiles ang taas (150x100)
                     img = pygame.transform.scale(img, (TILE_SIZE * 3, TILE_SIZE * 2))
                 elif key == "bottom_bar":
-                    # Sasakupin ang buong ilalim ng screen (Lapad ng screen, taas ay 100)
                     img = pygame.transform.scale(img, (WIDTH, 100))
                 elif key == "door":
-                    # Gagawing slim vertical entrance (25 pixels lapad, 100 pixels taas)
                     img = pygame.transform.scale(img, (50, 80))
                 elif key == "chef":
-                    # Ang chef cat ay sapat na sa sukat na isang tile (50x50)
                     img = pygame.transform.scale(img, (TILE_SIZE, TILE_SIZE))
                 elif key in ["premium_beans", "auto_brewer"]:
                     img = pygame.transform.scale(img, (40, 40))
                 elif key != "bg": 
-                    # Lahat ng iba pang blocks gaya ng tables at chairs ay mananatiling 50x50
                     img = pygame.transform.scale(img, (TILE_SIZE, TILE_SIZE))
                 self.assets[key] = img
             else:
@@ -223,14 +218,11 @@ class Game:
                 img = pygame.image.load(path).convert_alpha()
                 img = pygame.transform.scale(img, (TILE_SIZE, TILE_SIZE))
                 self.assets["cust_variants"].append(img)
-
         if not self.assets["cust_variants"]:
             self.assets["cust_variants"].append(None)
 
-        # UI Sprite Sheet Loading
         if os.path.exists("ui_spritesheet.png"):
             sheet = pygame.image.load("ui_spritesheet.png").convert_alpha()
-            # Slicing the UI components based on the image provided
             self.assets["ui_panel_big"] = pygame.transform.scale(self.get_sprite(sheet, 396, 750, 190, 95), (400, 400))
             self.assets["ui_btn_long"] = pygame.transform.scale(self.get_sprite(sheet, 181, 749, 100, 35), (140, 60))
             self.assets["ui_btn_sq"] = pygame.transform.scale(self.get_sprite(sheet, 791, 19, 26, 26), (100, 30))
@@ -253,16 +245,19 @@ class Game:
         self.chair_positions = {}
         chair_offsets = [(0, -1), (0, 1), (-1, 0), (1, 0)]
         
-        for i in range(self.upgrades["Tables"]["lv"]):
+        for i in range(len(self.all_tables)):
             t_pos = self.all_tables[i]
-            self.obstacles.add(t_pos)
+            if i < self.upgrades["Tables"]["lv"]:
+                self.obstacles.add(t_pos)
+            
             self.chair_positions[i] = []
             for c_idx in range(self.upgrades["Furniture Size"]["lv"]):
                 off_x, off_y = chair_offsets[c_idx]
                 chair_pos = (t_pos[0] + off_x, t_pos[1] + off_y)
                 if 0 <= chair_pos[0] < COLS and 0 <= chair_pos[1] < ROWS:
                     self.chair_positions[i].append(chair_pos)
-                    self.obstacles.add(chair_pos)
+                    if i < self.upgrades["Tables"]["lv"]:
+                        self.obstacles.add(chair_pos)
 
     def get_dynamic_obstacles(self, exclude_cust=None):
         obs = self.obstacles.copy()
@@ -271,16 +266,27 @@ class Game:
                 obs.add(c.grid_pos)
         return obs
 
-    def get_best_delivery_spot(self, table_pos, table_idx):
-        potential = [(0,1), (0,-1), (1,0), (-1,0)]
-        chairs = self.chair_positions[table_idx]
+    def get_best_delivery_spot(self, cust_ref):
+        cust_pos = cust_ref.grid_pos
+        table_pos = self.all_tables[cust_ref.table_idx]
+        potential = [(0, 1), (0, -1), (1, 0), (-1, 0)]
         valid_spots = []
+        
         for dx, dy in potential:
-            check = (table_pos[0] + dx, table_pos[1] + dy)
+            check = (cust_pos[0] + dx, cust_pos[1] + dy)
             if 0 <= check[0] < COLS and 0 <= check[1] < ROWS:
-                if check not in self.obstacles or (check in chairs and check != self.customers[0].grid_pos):
-                    valid_spots.append(check)
-        if not valid_spots: return (table_pos[0], table_pos[1] + 1)
+                if check != table_pos and check != cust_pos:
+                    if check not in self.obstacles:
+                        valid_spots.append(check)
+        
+        if not valid_spots:
+            for dx, dy in potential:
+                check = (cust_pos[0] + dx, cust_pos[1] + dy)
+                if 0 <= check[0] < COLS and 0 <= check[1] < ROWS:
+                    if check != table_pos and check != cust_pos:
+                        valid_spots.append(check)
+                        
+        if not valid_spots: return (cust_pos[0], cust_pos[1])
         return min(valid_spots, key=lambda s: abs(s[0]-self.cat_grid[0]) + abs(s[1]-self.cat_grid[1]))
 
     def handle_input(self):
@@ -288,6 +294,10 @@ class Game:
         for event in pygame.event.get():
             if event.type == pygame.QUIT: return False
             if event.type == pygame.MOUSEBUTTONDOWN:
+                if self.game_state == "START":
+                    self.game_state = "PLAYING"
+                    return True
+
                 if self.show_upgrades:
                     if pygame.Rect(WIDTH//2+130, HEIGHT//2-160, 30, 30).collidepoint(mx, my):
                         self.show_upgrades = False
@@ -327,6 +337,9 @@ class Game:
         self.floating_texts.append(FloatingText(f"{'+' if amt > 0 else ''}¥{amt}", x, y, color))
 
     def update(self):
+        if self.game_state == "START":
+            return
+
         if self.upgrades["Auto-Brewer"]["lv"] > 0:
             self.auto_brew_timer += 1
             if self.auto_brew_timer > 300:
@@ -341,21 +354,35 @@ class Game:
 
         self.spawn_timer += 1
         if self.spawn_timer > 220:
-            occupied_indices = [c.table_idx for c in self.customers]
-            available = [i for i in range(self.upgrades["Tables"]["lv"]) if i not in occupied_indices]
-            if available:
-                idx = random.choice(available)
-                target_chair = self.chair_positions[idx][0]
-
+            occupied_chair_positions = [c.target_grid for c in self.customers]
+            available_chairs = []
+            
+            for t_idx in range(self.upgrades["Tables"]["lv"]):
+                for chair_pos in self.chair_positions[t_idx]:
+                    if chair_pos not in occupied_chair_positions:
+                        available_chairs.append((t_idx, chair_pos))
+            
+            if available_chairs:
+                target_table_idx, target_chair_pos = random.choice(available_chairs)
                 num_variants = len(self.assets["cust_variants"])
-                new_cust = Customer(self.door_pos, idx, target_chair, num_variants)
-
-                new_cust.path = Dijkstra.find_path(self.door_pos, target_chair, self.obstacles)
+                new_cust = Customer(self.door_pos, target_table_idx, target_chair_pos, num_variants)
+                new_cust.path = Dijkstra.find_path(self.door_pos, target_chair_pos, self.obstacles)
                 self.customers.append(new_cust)
             self.spawn_timer = 0
 
         for c in self.customers[:]:
             c.update_move()
+            if c.state == "SITTING":
+                c.patience -= 0.5
+                if c.patience <= 0:
+                    self.add_money(-15, c.pixel_pos[0], c.pixel_pos[1])
+                    c.state = "WALKING_OUT"
+                    c.path = Dijkstra.find_path(c.grid_pos, self.door_pos, self.obstacles)
+                    if self.active_cust_ref == c:
+                        self.active_cust_ref = None
+                        self.cat_state = "IDLE"
+                        self.cat_path = []
+
             if c.pixel_pos == c.target_pixel:
                 if c.path:
                     next_node = c.path.pop(0)
@@ -380,24 +407,16 @@ class Game:
             else:
                 if self.cat_state == "FETCHING":
                     self.cat_state = "DELIVERING"
-                    t_pos = self.all_tables[self.active_cust_ref.table_idx]
-                    delivery_spot = self.get_best_delivery_spot(t_pos, self.active_cust_ref.table_idx)
+                    delivery_spot = self.get_best_delivery_spot(self.active_cust_ref)
                     self.cat_path = Dijkstra.find_path(self.cat_grid, delivery_spot, self.get_dynamic_obstacles())
                 elif self.cat_state == "DELIVERING":
                     val = 15 + (self.upgrades["Premium Beans"]["lv"] * 5) + (self.upgrades["Furniture Size"]["lv"] * 10)
-                    
-                    # --- BAGONG LOGIC PARA SA KULAY NG PERA ---
-                    self.money += val # Idagdag ang Yen sa pitaka mo
-                    
-                    # Piliin kung anong kulay: Green kung Level 1, Gold naman kung Level 2 pataas
+                    self.money += val 
                     text_color = CLR_ACCENT if self.upgrades["Premium Beans"]["lv"] == 1 else CLR_GOLD
-                    
-                    # I-render ang lumulutang na text gamit ang napiling kulay
                     self.floating_texts.append(FloatingText(f"+¥{val}", self.cat_pos[0], self.cat_pos[1], text_color))
-                    # ----------------------------------------
-
                     self.active_cust_ref.state = "WALKING_OUT"
                     self.active_cust_ref.path = Dijkstra.find_path(self.active_cust_ref.grid_pos, self.door_pos, self.obstacles)
+                    self.active_cust_ref = None 
                     self.cat_state = "IDLE"
 
         for t in self.floating_texts[:]:
@@ -406,39 +425,26 @@ class Game:
 
     def draw_cat(self, x, y, has_tray):
         time_ms = pygame.time.get_ticks()
-        
-        # Kunin ang kasalukuyang speed multiplier mula sa upgrades mo (karaniwang nasa 3 hanggang 7)
         current_speed = 2 + self.upgrades["Cat Speed"]["lv"]
-        
         if self.cat_pos != self.cat_target:
-            # WALKING STATE: Inihambing natin ang bilis sa aktwal na paglakad (current_speed)
-            # Ginawa nating 0.0035 para swabe at hindi mukhang jelly
             anim_timer = time_ms * (0.0025 * current_speed)
-            
-            bounce_y = abs(math.sin(anim_timer)) * -5  # Binabaan natin sa -5 pixels lang ang taas ng talbog
-            squash_w = int(TILE_SIZE + math.sin(anim_timer) * 1.5) # Binawasan ang squash para hindi masyadong malambot
+            bounce_y = abs(math.sin(anim_timer)) * -5  
+            squash_w = int(TILE_SIZE + math.sin(anim_timer) * 1.5) 
             squash_h = int(TILE_SIZE - math.sin(anim_timer) * 1.5)
         else:
-            # IDLE STATE (Nakatambay): Banayad na paghinga, hindi apektado ng lakad
             bounce_y = math.sin(time_ms * 0.003) * -1.5
             squash_w = int(TILE_SIZE + math.sin(time_ms * 0.003) * 0.8)
             squash_h = int(TILE_SIZE - math.sin(time_ms * 0.003) * 0.8)
 
-        # --- DITO ANG BAGONG LOGIC ---
         if self.assets["cat"]:
-            # 1. Palaging i-draw ang base na pusa
             animated_cat = pygame.transform.scale(self.assets["cat"], (squash_w, squash_h))
             render_x = x - (squash_w // 2)
             render_y = y - (squash_h // 2) + bounce_y
             self.screen.blit(animated_cat, (render_x, render_y))
-            
-            # 2. Kung may dalang tray, i-scale at i-patong ito sa ibabaw ng pusa
             if has_tray and self.assets["cat_tray"]:
                 animated_tray = pygame.transform.scale(self.assets["cat_tray"], (squash_w, squash_h))
-                # I-blit sa eksaktong pwesto para sumabay sa talbog ng pusa!
                 self.screen.blit(animated_tray, (render_x, render_y))
         else:
-            # Panatilihin ang iyong lumang primitve shape draw logic bilang fallback
             y += bounce_y
             pygame.draw.ellipse(self.screen, CLR_CAT, (x-18, y-12, 36, 24))
             pygame.draw.arc(self.screen, CLR_CAT, (x-25, y-5, 20, 20), 0, 3, 4)
@@ -449,18 +455,14 @@ class Game:
             if has_tray:
                 pygame.draw.rect(self.screen, (255,255,255), (x+5, y-2, 12, 8), border_radius=2)
 
-    def draw_chair(self, grid_x, grid_y, is_gold):
+    def draw_chair(self, grid_x, grid_y):
         if self.assets["chair"]:
             self.screen.blit(self.assets["chair"], (grid_x * TILE_SIZE, grid_y * TILE_SIZE))
-            if is_gold:
-                pygame.draw.rect(self.screen, CLR_GOLD, (grid_x*TILE_SIZE, grid_y*TILE_SIZE, 50, 50), 3, border_radius=4)
         else:
             cx, cy = grid_x * TILE_SIZE + 25, grid_y * TILE_SIZE + 25
             size = 15
             pygame.draw.rect(self.screen, CLR_CHAIR, (cx-size, cy-size, size*2, size*2), border_radius=4)
             pygame.draw.rect(self.screen, (90, 50, 20), (cx-size, cy-size-3, size*2, 8), border_radius=2)
-            if is_gold:
-                pygame.draw.rect(self.screen, CLR_GOLD, (cx-size, cy-size, size*2, size*2), 2, border_radius=4)
 
     def draw_decor(self):
         for r in self.rugs[:self.upgrades["Tables"]["lv"]]:
@@ -475,21 +477,38 @@ class Game:
                 pygame.draw.circle(self.screen, CLR_LEAF, (px-8, py), 10)
                 pygame.draw.circle(self.screen, CLR_LEAF, (px+8, py), 10)
 
+    def draw_start_screen(self):
+        self.screen.fill(CLR_BG)
+        title_text = self.title_font.render("Whiskers Cafe Tycoon", True, CLR_CAT)
+        prompt_text = self.ui_font.render("Click Anywhere to Start", True, CLR_ACCENT)
+        
+        tx = WIDTH // 2 - title_text.get_width() // 2
+        ty = HEIGHT // 2 - 100
+        px = WIDTH // 2 - prompt_text.get_width() // 2
+        py = HEIGHT // 2 + 20
+
+        bounce = math.sin(pygame.time.get_ticks() * 0.005) * 15
+        self.draw_cat(WIDTH // 2, ty - 80 + bounce, False)
+        
+        self.screen.blit(title_text, (tx, ty))
+        self.screen.blit(prompt_text, (px, py))
+
     def draw(self):
-        # --- BACKGROUND TILING LOGIC ---
+        if self.game_state == "START":
+            self.draw_start_screen()
+            pygame.display.flip()
+            return
+
         if self.assets["bg_tile"]:
-            # Uulitin natin ang bg.png sa bawat Rows at Columns ng screen mo
             for r in range(ROWS):
                 for c in range(COLS):
                     self.screen.blit(self.assets["bg_tile"], (c * TILE_SIZE, r * TILE_SIZE))
         else:
-            # Fallback kapag hindi nahanap ang bg.png file
             self.screen.fill(CLR_BG)
             for x in range(0, WIDTH, 50): pygame.draw.line(self.screen, (242,238,230), (x,0), (x, HEIGHT-100))
         
         self.draw_decor()
         if self.assets["door"]:
-            # I-blit ang pinto sa kanang gilid ng screen kung saan pumapasok ang pusa
             self.screen.blit(self.assets["door"], (WIDTH - 45, HEIGHT // 2 - 50))
         else:
             pygame.draw.rect(self.screen, CLR_ACCENT, (WIDTH-15, HEIGHT//2-50, 10, 100))
@@ -500,26 +519,15 @@ class Game:
             else:
                 pygame.draw.circle(self.screen, CLR_DIRT, (s[0]*50+25, s[1]*50+25), 18)
 
-        # Counter
         if self.assets["kitchen"]:
-            # I-render ang magandang kitchen image sa top-left grid area (0, 45)
             self.screen.blit(self.assets["kitchen"], (-5, 45))
-            
-            # Chef Animation: Gagamit ng sine wave para magkaroon ng "idle breath" o talbog habang nagluluto
             if self.assets["chef"]:
                 chef_bounce = math.sin(pygame.time.get_ticks() * 0.004) * -3
-                # I-blit ang chef sa loob ng counter area (X: 35, Y: 60) kasama ang talbog nito
                 self.screen.blit(self.assets["chef"], (35, 60 + chef_bounce))
-
-            # --- LILITAW ANG BREWER SA COUNTER KAPAG LEVEL 1 PATAAS ---
             if self.upgrades["Auto-Brewer"]["lv"] > 0 and self.assets["auto_brewer"]:
-                # I-scale natin ng kaunti para maging 45x45 para maganda ang pwesto sa tabi ng chef
                 brewer_img = pygame.transform.scale(self.assets["auto_brewer"], (45, 45))
-                # I-blit sa X: 95, Y: 65 (sa tapat ng lamesa ng kusina mo)
                 self.screen.blit(brewer_img, (95, 65))
-
         else:
-            # Fallback kung sakaling may problema sa pag-load ng file
             pygame.draw.rect(self.screen, CLR_TABLE, (0, 45, 150, 100), border_radius=5)
             self.screen.blit(self.font.render("Counter", True, (255,255,255)), (40, 80))
 
@@ -530,8 +538,7 @@ class Game:
                 pygame.draw.circle(self.screen, (220,220,220), (px, py), 20, 2)
             else:
                 for c_pos in self.chair_positions[i]:
-                    self.draw_chair(c_pos[0], c_pos[1], self.upgrades["Furniture Size"]["lv"] == 4)
-                
+                    self.draw_chair(c_pos[0], c_pos[1])
                 if self.assets["table"]:
                     self.screen.blit(self.assets["table"], (pos[0]*50, pos[1]*50))
                 else:
@@ -542,7 +549,6 @@ class Game:
         time_ms = pygame.time.get_ticks()
         for c in self.customers:
             c_time = time_ms + c.anim_offset
-            
             if c.state == "SITTING":
                 c_bounce_y = math.sin(c_time * 0.002) * -1.5 
                 c_w = int(TILE_SIZE + math.sin(c_time * 0.002) * 0.5)
@@ -554,7 +560,6 @@ class Game:
                 c_h = int(TILE_SIZE - math.sin(anim_timer) * 1.2)
 
             cust_asset = self.assets["cust_variants"][c.variant]
-
             if cust_asset:
                 animated_cust = pygame.transform.scale(cust_asset, (c_w, c_h))
                 cx = c.pixel_pos[0] - (c_w // 2)
@@ -564,26 +569,34 @@ class Game:
                 pygame.draw.circle(self.screen, CLR_CUST, (int(c.pixel_pos[0]), int(c.pixel_pos[1] + c_bounce_y)), 16)
             
             if c.state == "SITTING":
-                # Isama ang c_bounce_y para sumabay din ang white bubbles sa pag-talbog ng pusa
+                bar_w, bar_h = 40, 6
+                bx = c.pixel_pos[0] - bar_w//2
+                by = c.pixel_pos[1] - 45 + c_bounce_y
+                pygame.draw.rect(self.screen, (100, 100, 100), (bx, by, bar_w, bar_h))
+                p_ratio = max(0, c.patience / c.max_patience)
+                p_color = (int(255 * (1 - p_ratio)), int(255 * p_ratio), 0)
+                pygame.draw.rect(self.screen, p_color, (bx, by, int(bar_w * p_ratio), bar_h))
+                
                 pygame.draw.circle(self.screen, (255,255,255), (c.pixel_pos[0]+15, c.pixel_pos[1]-18 + c_bounce_y), 10)
                 pygame.draw.circle(self.screen, (255,255,255), (c.pixel_pos[0]+8, c.pixel_pos[1]-10 + c_bounce_y), 4)
 
+                if c == self.active_cust_ref:
+                    tri_y = c.pixel_pos[1] - 65 + math.sin(time_ms * 0.01) * 5
+                    pygame.draw.polygon(self.screen, CLR_GOLD, [(c.pixel_pos[0]-10, tri_y), (c.pixel_pos[0]+10, tri_y), (c.pixel_pos[0], tri_y+15)])
+                    pygame.draw.polygon(self.screen, (255, 255, 255), [(c.pixel_pos[0]-10, tri_y), (c.pixel_pos[0]+10, tri_y), (c.pixel_pos[0], tri_y+15)], 2)
+
         self.draw_cat(self.cat_pos[0], self.cat_pos[1], self.cat_state == "DELIVERING")
         
-        # UI Bottom Bar
         if self.assets["bottom_bar"]:
             self.screen.blit(self.assets["bottom_bar"], (0, HEIGHT-100))
         else:
             pygame.draw.rect(self.screen, CLR_UI, (0, HEIGHT-100, WIDTH, 100))
-            
         self.screen.blit(self.ui_font.render(f"Yen: ¥{self.money}", True, (255, 255, 255)), (40, HEIGHT-65))
         
-        # Upgrade Button
-        btn_rect = pygame.Rect(WIDTH-160, HEIGHT-80, 140, 60)
         if self.assets["ui_btn_long"]:
             self.screen.blit(self.assets["ui_btn_long"], (WIDTH-160, HEIGHT-80))
         else:
-            pygame.draw.rect(self.screen, (210, 105, 30), btn_rect, border_radius=13)
+            pygame.draw.rect(self.screen, (210, 105, 30), pygame.Rect(WIDTH-160, HEIGHT-80, 140, 60), border_radius=13)
         self.screen.blit(self.font.render("UPGRADES", True, (255,255,255)), (WIDTH-135, HEIGHT-60))
 
         for t in self.floating_texts:
@@ -595,63 +608,40 @@ class Game:
             overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 120))
             self.screen.blit(overlay, (0,0))
-            
-            # Shop Panel
-            win = pygame.Rect(WIDTH//2-200, HEIGHT//2-200, 400, 400)
             if self.assets["ui_panel_big"]:
                 self.screen.blit(self.assets["ui_panel_big"], (WIDTH//2-200, HEIGHT//2-200))
             else:
-                pygame.draw.rect(self.screen, CLR_BG, win, border_radius=15)
-                
-            # Close Button
+                pygame.draw.rect(self.screen, CLR_BG, (WIDTH//2-200, HEIGHT//2-200, 400, 400), border_radius=15)
             if self.assets["ui_close"]:
                 self.screen.blit(self.assets["ui_close"], (WIDTH//2+130, HEIGHT//2-160))
             else:
                 pygame.draw.rect(self.screen, (200, 50, 50), (WIDTH//2+130, HEIGHT//2-160, 30, 30), border_radius=5)
                 self.screen.blit(self.font.render("X", True, (255, 255, 255)), (WIDTH//2+138, HEIGHT//2-158))
-                
             self.screen.blit(self.ui_font.render("Shop Upgrades", True, CLR_CAT), (WIDTH//2-80, HEIGHT//2-160))
-            
             y_off = HEIGHT//2 - 80
             for name, data in self.upgrades.items():
                 if name == "Furniture Size" and self.upgrades["Tables"]["lv"] < self.upgrades["Tables"]["max"]:
                     continue
-                
-                # --- SHOP MENU ICON INTEGRATION ---
-                # --- SHOP MENU ICON INTEGRATION (ALL UPGRADES UNIFORM) ---
                 icon_to_draw = None
-                if name == "Cat Speed":
-                    icon_to_draw = self.assets["cat"]
-                elif name == "Tables":
-                    icon_to_draw = self.assets["table"]
-                elif name == "Auto-Brewer":
-                    icon_to_draw = self.assets["auto_brewer"]
-                elif name == "Premium Beans":
-                    icon_to_draw = self.assets["premium_beans"]
-                elif name == "Furniture Size": # Ito yung "Add Chairs"
-                    icon_to_draw = self.assets["chair"]
-
+                if name == "Cat Speed": icon_to_draw = self.assets["cat"]
+                elif name == "Tables": icon_to_draw = self.assets["table"]
+                elif name == "Auto-Brewer": icon_to_draw = self.assets["auto_brewer"]
+                elif name == "Premium Beans": icon_to_draw = self.assets["premium_beans"]
+                elif name == "Furniture Size": icon_to_draw = self.assets["chair"]
                 text_x_offset = WIDTH // 2 - 175
-                
                 if icon_to_draw:
-                    # Lahat sila ngayon ay papasok dito kaya laging pantay ang pag-blit
                     self.screen.blit(icon_to_draw, (WIDTH // 2 - 175, y_off - 10))
                     text_x_offset += 50
-
                 display_name = "Add Chairs" if name == "Furniture Size" else name
                 self.screen.blit(self.font.render(f"{display_name} ({data['lv']})", True, (50,50,50)), (text_x_offset, y_off))
-                
-                # Buy Buttons
                 btn = pygame.Rect(WIDTH//2+40, y_off-5, 100, 30)
                 afford = self.money >= data["cost"] and data["lv"] < data["max"]
-                
                 if afford and self.assets["ui_btn_sq"]:
                     self.screen.blit(self.assets["ui_btn_sq"], (WIDTH//2+40, y_off-5))
                 elif not afford and self.assets["ui_btn_sq_off"]:
                     self.screen.blit(self.assets["ui_btn_sq_off"], (WIDTH//2+40, y_off-5))
                 else:
                     pygame.draw.rect(self.screen, CLR_ACCENT if afford else (200,200,200), btn, border_radius=5)
-                
                 lbl = f"¥{data['cost']}" if data["lv"] < data["max"] else "MAX"
                 self.screen.blit(self.font.render(lbl, True, (255,255,255)), (WIDTH//2+50, y_off))
                 y_off += 45
