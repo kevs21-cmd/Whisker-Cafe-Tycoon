@@ -76,6 +76,26 @@ class FloatingText:
         self.life -= 1
         self.alpha = max(0, self.alpha - 4)
 
+class Petal:
+    def __init__(self, width, height):
+        self.x = random.randint(0, width)
+        self.y = random.randint(-100, -10)
+        self.speed = random.uniform(1.0, 2.5)
+        self.size = random.randint(2, 4)
+        # Nagdaragdag ng indayog sa kaliwa't kanan (parang hangin)
+        self.swing = random.uniform(0, 10) 
+
+    def update(self, width, height):
+        self.y += self.speed
+        self.x += math.sin(self.swing) * 0.5
+        self.swing += 0.05
+        
+        # Kapag lumagpas na sa screen, ibalik sa itaas
+        if self.y > height or self.x < 0 or self.x > width:
+            self.x = random.randint(0, width)
+            self.y = random.randint(-50, -10)
+            self.speed = random.uniform(1.0, 2.5)
+
 class Customer:
     def __init__(self, start_pos, target_table_idx, target_pos, total_variants):
         self.grid_pos = start_pos
@@ -114,6 +134,41 @@ class Game:
 
         # --- Game State ---
         self.game_state = "START" 
+        self.loading_timer = 0  # Gagamitin para sa pansamantalang loading transition
+        
+        # Gumawa ng 25 piraso ng bumabagsak na bulaklak para sa overlay
+        self.petals = [Petal(WIDTH, HEIGHT) for _ in range(25)]
+        
+        # Mga Rect boundaries para sa mga clickable pads sa iyong cat paw map
+        # --- 100% Saktong Coordinates Base sa Iyong Bigay na Sukat ---
+        # --- Adjusted at pinaliit para magkasya sa 800x700 Screen Resolution ---
+        self.map_nodes = {
+            "restaurant": {
+                "rect": pygame.Rect(40, 240, 150, 120),      # Miso's Seafood Restaurant
+                "locked": True, 
+                "name": "Miso's Seafood Restaurant"
+            },
+            "bakery": {
+                "rect": pygame.Rect(210, 140, 150, 120),     # Pawsome Bakery
+                "locked": True, 
+                "name": "Pawsome Bakery"
+            },
+            "hotel": {
+                "rect": pygame.Rect(440, 140, 150, 120),     # Kitty Hotel
+                "locked": True, 
+                "name": "Kitty Hotel"
+            },
+            "lounge": {
+                "rect": pygame.Rect(610, 240, 150, 120),     # Cat Lounge
+                "locked": True, 
+                "name": "Cat Lounge"
+            },
+            "cafe": {
+                "rect": pygame.Rect(325, 340, 150, 120),     # Whiskers Cafe (Nakasentro sa Gitna)
+                "locked": False,                            
+                "name": "Whiskers Cafe"
+            }
+        }
 
         # --- Load Lo-Fi Background Music ---
         try:
@@ -180,7 +235,10 @@ class Game:
             "bottom_bar": "assets/images/bottom_ui.png",
             "chef": "assets/images/cat_chef.png",
             "auto_brewer": "assets/images/auto_brewer.png",  
-            "premium_beans": "assets/images/premium_beans.png"
+            "premium_beans": "assets/images/premium_beans.png",
+            "start_bg": "assets/images/menu.png",
+            "map_bg": "assets/images/map.png",
+            "lock_icon": "assets/images/lock.png"
         }
         for key, path in paths.items():
             if os.path.exists(path):
@@ -195,6 +253,10 @@ class Game:
                     img = pygame.transform.scale(img, (TILE_SIZE, TILE_SIZE))
                 elif key in ["premium_beans", "auto_brewer"]:
                     img = pygame.transform.scale(img, (40, 40))
+                elif key == "start_bg":
+                    img = pygame.transform.scale(img, (WIDTH, HEIGHT))
+                elif key == "map_bg":
+                    img = pygame.transform.smoothscale(img, (WIDTH, HEIGHT))
                 elif key != "bg": 
                     img = pygame.transform.scale(img, (TILE_SIZE, TILE_SIZE))
                 self.assets[key] = img
@@ -294,8 +356,21 @@ class Game:
         for event in pygame.event.get():
             if event.type == pygame.QUIT: return False
             if event.type == pygame.MOUSEBUTTONDOWN:
+                # Mula Menu, lipat muna sa Map screen
                 if self.game_state == "START":
-                    self.game_state = "PLAYING"
+                    self.game_state = "MAP"
+                    return True
+
+                # Kung nasa Map Screen, titingnan kung alin sa 4 na bagong locks ang pinindot
+                if self.game_state == "MAP":
+                    for key, node in self.map_nodes.items():
+                        if node["rect"].collidepoint(mx, my):
+                            if not node["locked"]:
+                                self.game_state = "LOADING"
+                                self.loading_timer = pygame.time.get_ticks()
+                            else:
+                                # Awtomatikong magpapakita ng lumulutang na warning kapag pinindot ang kahit alin sa 4
+                                self.floating_texts.append(FloatingText("LOCKED AREA", mx, my, (220, 60, 60)))
                     return True
 
                 if self.show_upgrades:
@@ -337,7 +412,14 @@ class Game:
         self.floating_texts.append(FloatingText(f"{'+' if amt > 0 else ''}¥{amt}", x, y, color))
 
     def update(self):
-        if self.game_state == "START":
+        if self.game_state in ["START", "MAP"]:
+            return
+
+        # Loading screen transition mechanism
+        if self.game_state == "LOADING":
+            # Maghihintay ng 2000 milliseconds (2 segundo) bago pumasok sa cafe game window
+            if pygame.time.get_ticks() - self.loading_timer > 2000:
+                self.game_state = "PLAYING"
             return
 
         if self.upgrades["Auto-Brewer"]["lv"] > 0:
@@ -478,27 +560,111 @@ class Game:
                 pygame.draw.circle(self.screen, CLR_LEAF, (px+8, py), 10)
 
     def draw_start_screen(self):
-        self.screen.fill(CLR_BG)
-        title_text = self.title_font.render("Whiskers Cafe Tycoon", True, CLR_CAT)
-        prompt_text = self.ui_font.render("Click Anywhere to Start", True, CLR_ACCENT)
+        # 1. I-draw ang background image
+        if self.assets.get("start_bg"):
+            self.screen.blit(self.assets["start_bg"], (0, 0))
+        else:
+            self.screen.fill(CLR_BG)
+            
+        # 2. Gumawa ng dahan-dahang kumukurap (pulsing) na text gamit ang math.sin
+        # Ginagamit ang pygame.time.get_ticks() para sa timing ng animation
+        import math
+        alpha = int((math.sin(pygame.time.get_ticks() * 0.005) + 1) * 127.5)
         
-        tx = WIDTH // 2 - title_text.get_width() // 2
-        ty = HEIGHT // 2 - 100
-        px = WIDTH // 2 - prompt_text.get_width() // 2
-        py = HEIGHT // 2 + 20
+        # Gumamit ng mas maliit na font size (halimbawa, kung may medium_font ka, gamitin mo yun)
+        # Kung wala, okay lang ang title_font pero i-render natin sa mas malinis na kulay
+        text_color = (245, 235, 215) # Medyo malambot na kulay kape para bumagay sa pixel art
+        start_text = self.title_font.render("CLICK ANYWHERE TO START", True, text_color)
+        
+        # Gumawa ng surface para sa opacity/transparency ng kurap effect
+        start_text.set_alpha(alpha)
+        
+        # 3. Iposisyon sa PINAKA-IBABA ng screen (sa tapat ng bakanteng kalsada)
+        text_rect = start_text.get_rect()
+        # HEIGHT - 60 para malapit sa ilalim, hindi matatakpan ang pusa at mesa
+        text_rect.center = (WIDTH // 2, HEIGHT - 60) 
+        
+        self.screen.blit(start_text, text_rect)
 
-        bounce = math.sin(pygame.time.get_ticks() * 0.005) * 15
-        self.draw_cat(WIDTH // 2, ty - 80 + bounce, False)
+    def draw_map_screen(self):
+        # 1. I-render ang Map Background (Garantisadong malinaw gamit ang smoothscale sa load_assets)
+        if self.assets.get("map_bg"):
+            self.screen.blit(self.assets["map_bg"], (0, 0))
+        else:
+            self.screen.fill((240, 220, 200))
+            
+        # 2. I-render ang mga Nodes (Shadow Overlay at Lock Icon LAMANG)
+        for key, node in self.map_nodes.items():
+            rect = node["rect"]
+            
+            # KUNG NAKALOCK (Restaurant, Bakery, Hotel, Lounge)
+            if node["locked"]:
+                # SHADOW: Gumawa ng semi-transparent dark overlay sa ibabaw ng isla
+                lock_overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                lock_overlay.fill((30, 30, 40, 110)) # Pwede mong lakihan ang 110 kung gusto mo mas madilim ang shadow
+                self.screen.blit(lock_overlay, (rect.x, rect.y))
+                
+                # BORDER: Opsyonal na pulang gabay (Puwede mong burahin ang linya sa ibaba kung ayaw mo ng border)
+                pygame.draw.rect(self.screen, (220, 80, 80), rect, 2, border_radius=10)
+                
+                # LOCK ICON: I-render ang icon ng Lock saktong-sakto sa gitna ng kahon
+                if self.assets.get("lock_icon"):
+                    scaled_lock = pygame.transform.smoothscale(self.assets["lock_icon"], (40, 40))
+                    self.screen.blit(scaled_lock, (rect.centerx - 20, rect.centery - 20))
+                else:
+                    # Fallback text kung sakaling hindi mahanap ang lock.png file
+                    lock_lbl = self.font.render("LOCKED", True, (255, 120, 120))
+                    self.screen.blit(lock_lbl, (rect.centerx - lock_lbl.get_width()//2, rect.centery - 10))
+            
+            # KUNG UNLOCKED (Whiskers Cafe)
+            else:
+                # Walang shadow at walang lock para sa Cafe, border indicator lamang
+                pygame.draw.rect(self.screen, (100, 180, 120), rect, 3, border_radius=10)
+                
+                # Kumukurap na ENTER sign para alam ng player na pwede silang pumasok
+                pulse = int((math.sin(pygame.time.get_ticks() * 0.01) + 1) * 127.5)
+                play_lbl = self.font.render("▶ ENTER", True, (80, 160, 100))
+                play_lbl.set_alpha(pulse)
+                self.screen.blit(play_lbl, (rect.centerx - play_lbl.get_width()//2, rect.y + 20))
+
+        # 3. Falling Sakura Blossoms Overlay Animation
+        for petal in self.petals:
+            petal.update(WIDTH, HEIGHT)
+            pygame.draw.circle(self.screen, (255, 192, 203), (int(petal.x), int(petal.y)), petal.size)
+
+        # 4. Floating warning texts rendering (Kapag pinindot ang locked area)
+        for t in self.floating_texts:
+            img = self.font.render(t.text, True, t.color)
+            img.set_alpha(t.alpha)
+            self.screen.blit(img, (t.x, t.y))
+
+    def draw_loading_screen(self):
+        self.screen.fill((40, 35, 45)) # Madilim na lilang gabi para sa cozy transition context
         
-        self.screen.blit(title_text, (tx, ty))
-        self.screen.blit(prompt_text, (px, py))
+        # Simple at malinis na pulsing text para sa feedback
+        pulse = int((math.sin(pygame.time.get_ticks() * 0.01) + 1) * 127.5)
+        load_text = self.ui_font.render("LOADING WHISKERS CAFE...", True, (245, 235, 215))
+        load_text.set_alpha(pulse)
+        
+        text_rect = load_text.get_rect(center=(WIDTH // 2, HEIGHT // 2))
+        self.screen.blit(load_text, text_rect)
+        
 
     def draw(self):
         if self.game_state == "START":
             self.draw_start_screen()
             pygame.display.flip()
             return
+        elif self.game_state == "MAP":
+            self.draw_map_screen()
+            pygame.display.flip()
+            return
+        elif self.game_state == "LOADING":
+            self.draw_loading_screen()
+            pygame.display.flip()
+            return
 
+        # --- Mula rito pababa, ito na ang dati mong regular Cafe Level Gameplay rendering ---
         if self.assets["bg_tile"]:
             for r in range(ROWS):
                 for c in range(COLS):
